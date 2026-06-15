@@ -6,7 +6,8 @@
 
 // Указываем пин D5 (в NodeMCU пин D5 соответствует GPIO14)
 const uint16_t kRecvPin = D5;
-IrAC ac(kRecvPin);
+const uint16_t kSendPin = D2;
+IrAC ac(kRecvPin, kSendPin);
 
 // Настройки MQTT
 const char* mqttServer = "192.168.3.6";
@@ -22,6 +23,8 @@ const char* topic_cmd_power = "/home/cabinet/ferrum/ac/cmd/power";
 const char* topic_cmd_temp = "/home/cabinet/ferrum/ac/cmd/temp";
 const char* topic_cmd_mode = "/home/cabinet/ferrum/ac/cmd/mode";
 const char* topic_cmd_fan = "/home/cabinet/ferrum/ac/cmd/fan";
+const char* topic_cmd_display = "/home/cabinet/ferrum/ac/cmd/display";
+const char* topic_cmd_swing = "/home/cabinet/ferrum/ac/cmd/swing";
 const char* topic_cmd_errors = "/home/cabinet/ferrum/ac/cmd/errors";
 
 void setup() {
@@ -42,6 +45,8 @@ void setup() {
 
   mqttClient.setServer(mqttServer, mqttPort);
   mqttClient.setCallback(mqttCallback);
+  mqttClient.setKeepAlive(60);
+  mqttClient.setSocketTimeout(30);
 
   Serial.println("Start");
   Serial.println("Ожидание сигналов от пульта кондиционера...");
@@ -69,38 +74,7 @@ void loop() {
   yield();  // Системный сброс таймаутов ESP8266
 }
 
-void printStateToSerial() {
-  // Получаем текущую структуру состояния
-  ACState current = ac.getState();
 
-  // Выводим обновленные параметры в консоль
-  Serial.print("Питание: ");
-  Serial.println(current.power ? "ВКЛ" : "ВЫКЛ");
-
-  if (current.power || true) {
-    Serial.print("Режим: ");
-    switch (current.mode) {
-      case ACMode::MODE_AUTO: Serial.println("AUTO"); break;
-      case ACMode::MODE_COOL: Serial.println("COOL (Охлаждение)"); break;
-      case ACMode::MODE_DRY: Serial.println("DRY (Осушение)"); break;
-      case ACMode::MODE_HEAT: Serial.println("HEAT (Обогрев)"); break;
-      case ACMode::MODE_FAN: Serial.println("FAN (Вентиляция)"); break;
-    }
-
-    Serial.print("Температура: ");
-    Serial.print(current.targetTemp);
-    Serial.println(" °C");
-
-    Serial.print("Вентилятор: ");
-    switch (current.fan) {
-      case ACFan::FAN_AUTO: Serial.println("AUTO"); break;
-      case ACFan::FAN_LOW: Serial.println("LOW (Низкий)"); break;
-      case ACFan::FAN_MEDIUM: Serial.println("MEDIUM (Средний)"); break;
-      case ACFan::FAN_HIGH: Serial.println("HIGH (Высокий)"); break;
-    }
-  }
-  Serial.println("----------------------------------------");
-}
 
 void reconnectMQTT() {
   while (!mqttClient.connected()) {
@@ -114,6 +88,8 @@ void reconnectMQTT() {
       mqttClient.subscribe(topic_cmd_temp);
       mqttClient.subscribe(topic_cmd_mode);
       mqttClient.subscribe(topic_get_request);
+      mqttClient.subscribe(topic_cmd_display);
+      // mqttClient.subscribe(topic_cmd_swing);
     } else {
       Serial.print("Ошибка, rc=");
       Serial.print(mqttClient.state());
@@ -139,13 +115,15 @@ void mqttCallback(char* topic_ch, byte* payload, unsigned int length) {
     return;
   }
 
-  // auto oldValues = ac.getState();
+  auto oldValues = ac.getState();
 
   if (topic == topic_cmd_power) {
     if (message == "ON" || message == "1")
       ac.setPower(true);
     else if (message == "OFF" || message == "0")
-      ac.setPower(true);
+      ac.setPower(false);
+    else if (message == "TOGGLE" || message == "2")
+      ac.setPower(!oldValues.power);
     else
       mqttClient.publish(topic_cmd_errors, "Unknown power value", true);
 
@@ -163,15 +141,23 @@ void mqttCallback(char* topic_ch, byte* payload, unsigned int length) {
     else if (message == "medium") ac.setFan(ACFan::FAN_MEDIUM);
     else if (message == "high") ac.setFan(ACFan::FAN_HIGH);
     else if (message == "auto") ac.setFan(ACFan::FAN_AUTO);
+  } else if (topic == topic_cmd_display) {
+    if (message == "ON" || message == "1") ac.setDisplay(true);
+    else if (message == "OFF" || message == "0") ac.setDisplay(false);
+    else mqttClient.publish(topic_cmd_errors, "Unknown setDisplay value", true);
+  // } else if (topic == topic_cmd_swing) {
+  //   if (message == "low") ac.setS);
+  //   else if (message == "medium") ac.set);
+  //   else
   } else {
     mqttClient.publish(topic_cmd_errors, ("Unknown cmd: " + message).c_str(), true);
     return;
   }
 
-  // if (oldValues != ac.getState()) {
-  //   //что что изменили
-  //   publishStateJson();
-  // }
+  if (oldValues != ac.getState()) {
+    //что что изменили
+    publishStateJson();
+  }
 }
 
 String modeToString(ACMode mode) {
@@ -208,3 +194,37 @@ void publishStateJson() {
   serializeJson(doc, buffer);
   mqttClient.publish(topic_status_json, buffer, true);  // true - флаг Retain
 }
+
+void printStateToSerial() {
+  // Получаем текущую структуру состояния
+  ACState current = ac.getState();
+
+  // Выводим обновленные параметры в консоль
+  Serial.print("Питание: ");
+  Serial.println(current.power ? "ВКЛ" : "ВЫКЛ");
+
+  if (current.power || true) {
+    Serial.print("Режим: ");
+    switch (current.mode) {
+      case ACMode::MODE_AUTO: Serial.println("AUTO"); break;
+      case ACMode::MODE_COOL: Serial.println("COOL (Охлаждение)"); break;
+      case ACMode::MODE_DRY: Serial.println("DRY (Осушение)"); break;
+      case ACMode::MODE_HEAT: Serial.println("HEAT (Обогрев)"); break;
+      case ACMode::MODE_FAN: Serial.println("FAN (Вентиляция)"); break;
+    }
+
+    Serial.print("Температура: ");
+    Serial.print(current.targetTemp);
+    Serial.println(" °C");
+
+    Serial.print("Вентилятор: ");
+    switch (current.fan) {
+      case ACFan::FAN_AUTO: Serial.println("AUTO"); break;
+      case ACFan::FAN_LOW: Serial.println("LOW (Низкий)"); break;
+      case ACFan::FAN_MEDIUM: Serial.println("MEDIUM (Средний)"); break;
+      case ACFan::FAN_HIGH: Serial.println("HIGH (Высокий)"); break;
+    }
+  }
+  Serial.println("----------------------------------------");
+}
+
